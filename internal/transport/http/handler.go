@@ -33,7 +33,7 @@ func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/product
 func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
-	ps, err := h.productRepo.FindAll()
+	ps, err := h.productRepo.GetAll()
 	if err != nil {
 		h.logger.Errorf("list products: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -52,7 +52,7 @@ func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.productRepo.FindByID(id)
+	p, err := h.productRepo.GetByID(id)
 	if err != nil || p == nil {
 		h.sendError(w, http.StatusNotFound, "error", "Product not found")
 		return
