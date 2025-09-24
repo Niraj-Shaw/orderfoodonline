@@ -1,78 +1,102 @@
+// internal/service/order_service.go
 package service
 
 import (
 	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
 
 	"github.com/Niraj-Shaw/orderfoodonline/internal/models"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/promovalidator"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
-	"github.com/google/uuid"
 )
 
-// OrderService defines the interface for order-related business logic.
-type OrderService interface {
-	CreateOrder(req models.OrderRequest) (*models.Order, error)
-	GetOrderByID(id string) (*models.Order, error)
-	GetProducts() ([]models.Product, error)
+// ----- validation error type & helper -----
+
+type ValidationError struct{ Message string }
+
+func (e *ValidationError) Error() string { return e.Message }
+
+func NewValidationError(msg string) *ValidationError { return &ValidationError{Message: msg} }
+
+func IsValidationError(err error) bool {
+	var v *ValidationError
+	return errors.As(err, &v)
 }
 
-// orderService implements the OrderService interface.
-type orderService struct {
+// ----- service -----
+
+// OrderService handles business logic for order operations.
+type OrderService struct {
 	productRepo repository.ProductRepository
 	orderRepo   repository.OrderRepository
-	promoVal    promovalidator.ValidatorService
+	validator   promovalidator.ValidatorService
 }
 
-// NewOrderService creates a new OrderService.
-func NewOrderService(productRepo repository.ProductRepository, orderRepo repository.OrderRepository, promoVal promovalidator.ValidatorService) OrderService {
-	return &orderService{
+// NewOrderService constructs the service.
+func NewOrderService(
+	productRepo repository.ProductRepository,
+	orderRepo repository.OrderRepository,
+	validator promovalidator.ValidatorService,
+) *OrderService {
+	return &OrderService{
 		productRepo: productRepo,
 		orderRepo:   orderRepo,
-		promoVal:    promoVal,
+		validator:   validator,
 	}
 }
 
-// CreateOrder handles the business logic for creating a new order.
-func (s *orderService) CreateOrder(req models.OrderRequest) (*models.Order, error) {
+// PlaceOrder validates input, resolves products, validates promo (if any),
+// assigns a UUID, persists the order, and returns the saved copy.
+func (s *OrderService) PlaceOrder(req models.OrderRequest) (*models.Order, error) {
+	// Basic request validation
 	if len(req.Items) == 0 {
-		return nil, errors.New("order must contain at least one item")
+		return nil, NewValidationError("order must contain at least one item")
 	}
-
-	// In a real application, you would have more complex logic here, such as:
-	// - Checking product availability and stock
-	// - Calculating the total price
-	// - Applying the coupon discount
-
-	if req.CouponCode != "" {
-		if !s.promoVal.ValidatePromoCode(req.CouponCode) {
-			return nil, errors.New("invalid coupon code")
+	for i, it := range req.Items {
+		if it.ProductID == "" {
+			return nil, NewValidationError(fmt.Sprintf("item %d: productId is required", i+1))
+		}
+		if it.Quantity <= 0 {
+			return nil, NewValidationError(fmt.Sprintf("item %d: quantity must be > 0", i+1))
 		}
 	}
 
-	products, err := s.productRepo.GetProducts()
-	if err != nil {
-		return nil, err
+	// Promo validation (case-sensitive) if provided
+	if req.CouponCode != "" {
+		if !s.validator.ValidatePromoCode(req.CouponCode) {
+			return nil, NewValidationError("invalid promo code")
+		}
 	}
 
-	newOrder := &models.Order{
+	// Resolve products
+	resolvedItems := make([]models.OrderItem, 0, len(req.Items))
+	resolvedProducts := make([]models.Product, 0, len(req.Items))
+
+	for _, it := range req.Items {
+		p, err := s.productRepo.GetByID(it.ProductID)
+		if err != nil || p == nil {
+			return nil, NewValidationError(fmt.Sprintf("product with ID %s not found", it.ProductID))
+		}
+		resolvedItems = append(resolvedItems, models.OrderItem{
+			ProductID: it.ProductID,
+			Quantity:  it.Quantity,
+		})
+		resolvedProducts = append(resolvedProducts, *p)
+	}
+
+	// Build order with UUID
+	order := &models.Order{
 		ID:       uuid.New().String(),
-		Items:    req.Items,
-		Products: products, // Simplified: In reality, you'd match items to products
+		Items:    resolvedItems,
+		Products: resolvedProducts,
 	}
 
-	if err := s.orderRepo.CreateOrder(*newOrder); err != nil {
-		return nil, err
+	// Persist
+	saved, err := s.orderRepo.CreateOrder(order)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save order: %w", err)
 	}
-
-	return newOrder, nil
-}
-
-// GetOrderByID retrieves an order by its ID.
-func (s *orderService) GetOrderByID(id string) (*models.Order, error) {
-	return s.orderRepo.GetOrderByID(id)
-}
-
-// GetProducts retrieves all products.
-func (s *orderService) GetProducts() ([]models.Product, error) {
-	return s.productRepo.GetProducts()
+	return saved, nil
 }

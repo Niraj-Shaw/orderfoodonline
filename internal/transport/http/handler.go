@@ -62,7 +62,7 @@ func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/order  (requires api_key via middleware)
 func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
-	var req models.OrderReq
+	var req models.OrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.sendError(w, http.StatusBadRequest, "error", "Invalid input")
 		return

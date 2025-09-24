@@ -6,6 +6,7 @@ import (
 
 	"github.com/Niraj-Shaw/orderfoodonline/internal/models"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
+	"github.com/google/uuid"
 )
 
 // orderMemoryRepository is a thread-safe in-memory store for orders.
@@ -33,6 +34,10 @@ func (r *orderMemoryRepository) CreateOrder(order *models.Order) (*models.Order,
 		return nil, fmt.Errorf("order ID cannot be empty")
 	}
 
+	if _, err := uuid.Parse(order.ID); err != nil {
+		return nil, repository.ErrInvalidOrderID
+	}
+
 	if _, exists := r.orders[order.ID]; exists {
 		return nil, fmt.Errorf("order with ID %s already exists", order.ID)
 	}
@@ -47,9 +52,14 @@ func (r *orderMemoryRepository) FindByID(id string) (*models.Order, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
 
-	if order, exists := r.orders[id]; exists {
-		cp := order
-		return &cp, nil
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, repository.ErrInvalidOrderID
 	}
-	return nil, fmt.Errorf("order with ID %s not found", id)
+	order, exists := r.orders[id]
+	if !exists {
+		return nil, repository.ErrOrderNotFound
+	}
+
+	cp := order
+	return &cp, nil
 }

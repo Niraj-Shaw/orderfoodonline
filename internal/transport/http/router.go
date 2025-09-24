@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"time"
 
-	"orderfoodonline/internal/config"
-	"orderfoodonline/internal/repository"
-	"orderfoodonline/internal/service"
-	"orderfoodonline/internal/util"
+	"github.com/Niraj-Shaw/orderfoodonline/internal/config"
+	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
+	"github.com/Niraj-Shaw/orderfoodonline/internal/service"
+	"github.com/Niraj-Shaw/orderfoodonline/internal/util"
 
 	"github.com/gorilla/mux"
 )

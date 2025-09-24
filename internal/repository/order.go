@@ -1,9 +1,23 @@
 package repository
 
-import "github.com/Niraj-Shaw/orderfoodonline/internal/models"
+import (
+	"errors"
 
-// OrderRepository defines the interface for order data operations.
+	"github.com/Niraj-Shaw/orderfoodonline/internal/models"
+)
+
+var (
+	// Public, reusable errors
+	ErrInvalidOrderID = errors.New("invalid order id (must be UUID)")
+	ErrOrderExists    = errors.New("order already exists")
+	ErrOrderNotFound  = errors.New("order not found")
+)
+
+// OrderRepository defines persistence for orders.
 type OrderRepository interface {
-	CreateOrder(order models.Order) error
-	GetOrderByID(id string) (*models.Order, error)
+	// CreateOrder persists a new order and returns the stored copy.
+	CreateOrder(order *models.Order) (*models.Order, error)
+
+	// FindByID retrieves an order by its ID.
+	FindByID(id string) (*models.Order, error)
 }
