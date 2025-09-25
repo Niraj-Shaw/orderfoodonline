@@ -1,4 +1,3 @@
-// internal/service/order_service.go
 package service
 
 import (
@@ -29,26 +28,25 @@ func IsValidationError(err error) bool {
 
 // OrderService handles business logic for order operations.
 type OrderService struct {
-	productRepo repository.ProductRepository
-	orderRepo   repository.OrderRepository
-	validator   promovalidator.ValidatorService
+	productService *ProductService
+	orderRepo      repository.OrderRepository
+	validator      promovalidator.ValidatorService
 }
 
-// NewOrderService constructs the service.
 func NewOrderService(
-	productRepo repository.ProductRepository,
+	productService *ProductService,
 	orderRepo repository.OrderRepository,
 	validator promovalidator.ValidatorService,
 ) *OrderService {
 	return &OrderService{
-		productRepo: productRepo,
-		orderRepo:   orderRepo,
-		validator:   validator,
+		productService: productService,
+		orderRepo:      orderRepo,
+		validator:      validator,
 	}
 }
 
-// PlaceOrder validates input, resolves products, validates promo (if any),
-// assigns a UUID, persists the order, and returns the saved copy.
+// PlaceOrder validates input, resolves products (preserving item order),
+// validates promo, assigns a UUID, persists, and returns the saved order.
 func (s *OrderService) PlaceOrder(req models.OrderRequest) (*models.Order, error) {
 	// Basic request validation
 	if len(req.Items) == 0 {
@@ -70,20 +68,25 @@ func (s *OrderService) PlaceOrder(req models.OrderRequest) (*models.Order, error
 		}
 	}
 
-	// Resolve products
+	// Bulk validate existence → map[id]Product (lets us preserve item order)
+	ids := make([]string, 0, len(req.Items))
+	for _, it := range req.Items {
+		ids = append(ids, it.ProductID)
+	}
+	prodMap, err := s.productService.ValidateProductsExist(ids)
+	if err != nil {
+		return nil, err // already ValidationError
+	}
+
+	// Resolve items/products in the same order as request
 	resolvedItems := make([]models.OrderItem, 0, len(req.Items))
 	resolvedProducts := make([]models.Product, 0, len(req.Items))
-
 	for _, it := range req.Items {
-		p, err := s.productRepo.GetByID(it.ProductID)
-		if err != nil || p == nil {
-			return nil, NewValidationError(fmt.Sprintf("product with ID %s not found", it.ProductID))
-		}
 		resolvedItems = append(resolvedItems, models.OrderItem{
 			ProductID: it.ProductID,
 			Quantity:  it.Quantity,
 		})
-		resolvedProducts = append(resolvedProducts, *p)
+		resolvedProducts = append(resolvedProducts, prodMap[it.ProductID])
 	}
 
 	// Build order with UUID

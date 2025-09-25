@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/Niraj-Shaw/orderfoodonline/internal/config"
-	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/service"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/util"
 
@@ -23,7 +22,7 @@ type Server struct {
 // NewServer composes router, handlers, and http.Server with sane timeouts.
 func NewServer(
 	cfg *config.Config,
-	productRepo repository.ProductRepository,
+	productRepo *service.ProductService,
 	orderService *service.OrderService,
 	logger util.Logger,
 ) *Server {

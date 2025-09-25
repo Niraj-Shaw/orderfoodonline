@@ -6,24 +6,23 @@ import (
 	"strconv"
 
 	"github.com/Niraj-Shaw/orderfoodonline/internal/models"
-	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/service"
 	"github.com/Niraj-Shaw/orderfoodonline/internal/util"
 	"github.com/gorilla/mux"
 )
 
 type Handlers struct {
-	productRepo  repository.ProductRepository
-	orderService *service.OrderService
-	logger       util.Logger
+	productService *service.ProductService
+	orderService   *service.OrderService
+	logger         util.Logger
 }
 
 func NewHandlers(
-	productRepo repository.ProductRepository,
+	productService *service.ProductService,
 	orderService *service.OrderService,
 	logger util.Logger,
 ) *Handlers {
-	return &Handlers{productRepo: productRepo, orderService: orderService, logger: logger}
+	return &Handlers{productService: productService, orderService: orderService, logger: logger}
 }
 
 // GET /healthz
@@ -33,7 +32,7 @@ func (h *Handlers) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/product
 func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
-	ps, err := h.productRepo.GetAll()
+	ps, err := h.productService.GetAllProducts()
 	if err != nil {
 		h.logger.Errorf("list products: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -52,7 +51,7 @@ func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := h.productRepo.GetByID(id)
+	p, err := h.productService.GetProductByID(id)
 	if err != nil || p == nil {
 		h.sendError(w, http.StatusNotFound, "error", "Product not found")
 		return
