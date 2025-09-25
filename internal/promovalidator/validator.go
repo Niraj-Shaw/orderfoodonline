@@ -7,18 +7,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 )
 
 // Config holds the validator rules and file locations.
 type Config struct {
-	Dir          string   // folder where coupon files are stored, e.g. "./data"
-	Files        []string // file names, e.g. ["couponbase1.gz", "couponbase2.gz", "couponbase3.gz"]
-	MinLen       int      // minimum code length (8)
-	MaxLen       int      // maximum code length (10)
-	RequiredHits int      // how many files a code must appear in (2)
+	Dir          string   // e.g. "./data"
+	Files        []string // e.g. ["couponbase1.gz","couponbase2.gz","couponbase3.gz"]
+	MinLen       int      // 8
+	MaxLen       int      // 10
+	RequiredHits int      // 2
 }
 
 // ValidatorService is the public interface for promo validation.
@@ -27,24 +29,24 @@ type ValidatorService interface {
 	ValidatePromoCode(code string) bool
 }
 
-// streamingValidator implements ValidatorService in a streaming, safe way.
-type streamingValidator struct {
+// parallelValidator implements ValidatorService.
+// It scans files on demand, but does so concurrently and short-circuits early.
+type parallelValidator struct {
 	cfg  Config
 	once sync.Once
 	init error
 
-	// tiny cache: code -> bool
+	// tiny result cache: code -> bool
 	cache sync.Map
 }
 
-// NewValidatorService creates a streaming validator.
+// NewValidatorService creates the validator.
 func NewValidatorService(cfg Config) ValidatorService {
-	return &streamingValidator{cfg: cfg}
+	return &parallelValidator{cfg: cfg}
 }
 
 // LoadCouponFiles validates configuration only (does NOT open files).
-// This prevents LoadCouponFiles from failing simply because one data file is missing.
-func (v *streamingValidator) LoadCouponFiles() error {
+func (v *parallelValidator) LoadCouponFiles() error {
 	v.once.Do(func() {
 		if len(v.cfg.Files) == 0 {
 			v.init = errors.New("validator: no files configured")
@@ -58,15 +60,14 @@ func (v *streamingValidator) LoadCouponFiles() error {
 			v.init = errors.New("validator: RequiredHits must be >= 1")
 			return
 		}
-		// intentionally DO NOT attempt to open files here
 	})
 	return v.init
 }
 
-// ValidatePromoCode checks code (case-sensitive), scanning files on demand.
-// It tolerates missing files and will return true once RequiredHits are reached.
-func (v *streamingValidator) ValidatePromoCode(code string) bool {
-	// best-effort config validation; ignore non-config errors
+// ValidatePromoCode checks code (case-sensitive) by scanning files in parallel.
+// Missing/unreadable files are tolerated (skipped). Results are cached.
+func (v *parallelValidator) ValidatePromoCode(code string) bool {
+	// Best-effort config validation (don’t block lookups).
 	_ = v.LoadCouponFiles()
 
 	code = strings.TrimSpace(code)
@@ -74,74 +75,97 @@ func (v *streamingValidator) ValidatePromoCode(code string) bool {
 		return false
 	}
 
-	// cache fastpath
+	// cache fast path
 	if cached, ok := v.cache.Load(code); ok {
 		return cached.(bool)
 	}
 
-	found := 0
-	for _, fn := range v.cfg.Files {
-		full := filepath.Join(v.cfg.Dir, fn)
-		ok, err := foundInFile(full, code, v.cfg.MinLen, v.cfg.MaxLen)
-		if err != nil {
-			// tolerate: skip unreadable files
-			continue
+	// parallel scan with early stop
+	var found int32
+	var wg sync.WaitGroup
+
+	// Goroutine limiter: avoid spawning too many (min(NumCPU, len(files))).
+	limit := runtime.NumCPU()
+	if limit < 1 {
+		limit = 1
+	}
+	sem := make(chan struct{}, limit)
+
+	stop := atomic.Bool{} // when true, workers should return ASAP
+
+	for _, name := range v.cfg.Files {
+		if stop.Load() {
+			break
 		}
-		if ok {
-			found++
-			if found >= v.cfg.RequiredHits {
-				v.cache.Store(code, true)
-				return true
+		wg.Add(1)
+		sem <- struct{}{}
+		full := filepath.Join(v.cfg.Dir, name)
+
+		go func(path string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// If someone already met the threshold, bail early.
+			if stop.Load() {
+				return
 			}
-		}
+
+			ok, _ := foundInFile(path, code, v.cfg.MinLen, v.cfg.MaxLen)
+			if ok {
+				if atomic.AddInt32(&found, 1) >= int32(v.cfg.RequiredHits) {
+					// signal others to stop as soon as they can
+					stop.Store(true)
+				}
+			}
+		}(full)
 	}
 
-	v.cache.Store(code, false)
-	return false
+	wg.Wait()
+
+	result := atomic.LoadInt32(&found) >= int32(v.cfg.RequiredHits)
+	v.cache.Store(code, result)
+	return result
 }
 
-// foundInFile opens and scans the file for the exact token (case-sensitive).
-// If file can't be opened, return (false, nil) to indicate "not found, but not fatal".
-func foundInFile(filename, code string, minLen, maxLen int) (bool, error) {
-	f, err := os.Open(filename)
+// foundInFile opens and streams the file, returning true iff the exact token (case-sensitive) is present.
+// Missing/unreadable files are treated as "not found, nil error".
+func foundInFile(path, code string, minLen, maxLen int) (bool, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		// treat missing/unreadable file as non-fatal (test expects this)
-		return false, nil
+		return false, nil // tolerate missing or unreadable file
 	}
 	defer f.Close()
 
 	var r io.Reader = f
-	if strings.HasSuffix(strings.ToLower(filename), ".gz") {
+	if strings.HasSuffix(strings.ToLower(path), ".gz") {
 		gzr, err := gzip.NewReader(f)
 		if err != nil {
-			// unreadable gzip -> treat as non-fatal skip
-			return false, nil
+			return false, nil // unreadable gzip; skip
 		}
 		defer gzr.Close()
 		r = gzr
 	}
 
 	sc := bufio.NewScanner(r)
-	// allow long lines
+	// Allow long lines
 	const maxLine = 1024 * 1024 // 1MB
 	buf := make([]byte, 64*1024)
 	sc.Buffer(buf, maxLine)
 
 	for sc.Scan() {
-		// split into tokens by non-alphanumeric
+		// tokenize by non-alphanumeric
 		words := strings.FieldsFunc(sc.Text(), func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 		})
 		for _, w := range words {
-			if l := len(w); l >= minLen && l <= maxLen && isAlnum(w) && w == code {
+			// exact, case-sensitive match; length already bounded by caller’s code,
+			// but keep quick length check to skip needless compares:
+			if len(w) == len(code) && w == code {
 				return true, nil
 			}
 		}
 	}
-	if err := sc.Err(); err != nil {
-		// if scanning fails, treat it as a skip (non-fatal)
-		return false, nil
-	}
+	// scanner errors are treated as "not found" but non-fatal
 	return false, nil
 }
 
