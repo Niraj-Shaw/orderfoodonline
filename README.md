@@ -29,7 +29,7 @@ A **professional Go implementation** of the food ordering API based on OpenAPI 3
 ### 1. Clone and Setup
 ```bash
 # Clone your repository
-git clone https://github.com/YOUR_USERNAME/orderfoodonline.git
+git clone https://github.com/Niraj-Shaw/orderfoodonline.git
 cd orderfoodonline
 
 # Install dependencies
