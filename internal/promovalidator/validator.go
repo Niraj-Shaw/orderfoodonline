@@ -21,6 +21,10 @@ type Config struct {
 	MinLen       int      // 8
 	MaxLen       int      // 10
 	RequiredHits int      // 2
+
+	// Optional: cap the in-memory results cache (string->bool) to avoid unbounded growth.
+	// If 0, a sensible default (50k) is used. If negative, caching is disabled.
+	CacheSize int // e.g. 50000
 }
 
 // ValidatorService is the public interface for promo validation.
@@ -29,20 +33,28 @@ type ValidatorService interface {
 	ValidatePromoCode(code string) bool
 }
 
-// parallelValidator implements ValidatorService.
-// It scans files on demand, but does so concurrently and short-circuits early.
+// parallelValidator scans files on demand, concurrently, with early stop and bounded cache.
 type parallelValidator struct {
 	cfg  Config
 	once sync.Once
 	init error
 
-	// tiny result cache: code -> bool
-	cache sync.Map
+	// bounded cache (LRU). If nil, caching disabled.
+	lru *LRU
 }
 
-// NewValidatorService creates the validator.
+// NewValidatorService creates the validator with a bounded cache.
 func NewValidatorService(cfg Config) ValidatorService {
-	return &parallelValidator{cfg: cfg}
+	// default cache size if not provided
+	size := cfg.CacheSize
+	if size == 0 {
+		size = 50000
+	}
+	var lru *LRU
+	if size > 0 {
+		lru = NewLRU(size)
+	}
+	return &parallelValidator{cfg: cfg, lru: lru}
 }
 
 // LoadCouponFiles validates configuration only (does NOT open files).
@@ -64,10 +76,10 @@ func (v *parallelValidator) LoadCouponFiles() error {
 	return v.init
 }
 
-// ValidatePromoCode checks code (case-sensitive) by scanning files in parallel.
-// Missing/unreadable files are tolerated (skipped). Results are cached.
+// ValidatePromoCode checks the code (case-sensitive) by scanning files in parallel.
+// Missing/unreadable files are tolerated (skipped). Results are cached in a bounded LRU (if enabled).
 func (v *parallelValidator) ValidatePromoCode(code string) bool {
-	// Best-effort config validation (don’t block lookups).
+	// Don’t block on config errors; best-effort.
 	_ = v.LoadCouponFiles()
 
 	code = strings.TrimSpace(code)
@@ -75,23 +87,23 @@ func (v *parallelValidator) ValidatePromoCode(code string) bool {
 		return false
 	}
 
-	// cache fast path
-	if cached, ok := v.cache.Load(code); ok {
-		return cached.(bool)
+	// Cache fast path
+	if v.lru != nil {
+		if val, ok := v.lru.Get(code); ok {
+			return val
+		}
 	}
 
-	// parallel scan with early stop
+	// Parallel scan with early stop
 	var found int32
 	var wg sync.WaitGroup
 
-	// Goroutine limiter: avoid spawning too many (min(NumCPU, len(files))).
 	limit := runtime.NumCPU()
 	if limit < 1 {
 		limit = 1
 	}
 	sem := make(chan struct{}, limit)
-
-	stop := atomic.Bool{} // when true, workers should return ASAP
+	stop := atomic.Bool{} // set to true when we’ve reached RequiredHits
 
 	for _, name := range v.cfg.Files {
 		if stop.Load() {
@@ -105,34 +117,34 @@ func (v *parallelValidator) ValidatePromoCode(code string) bool {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			// If someone already met the threshold, bail early.
 			if stop.Load() {
 				return
 			}
-
-			ok, _ := foundInFile(path, code, v.cfg.MinLen, v.cfg.MaxLen)
+			ok, _ := foundInFile(path, code)
 			if ok {
 				if atomic.AddInt32(&found, 1) >= int32(v.cfg.RequiredHits) {
-					// signal others to stop as soon as they can
-					stop.Store(true)
+					stop.Store(true) // signal others to stop ASAP
 				}
 			}
 		}(full)
 	}
-
 	wg.Wait()
 
 	result := atomic.LoadInt32(&found) >= int32(v.cfg.RequiredHits)
-	v.cache.Store(code, result)
+
+	// Store in bounded cache
+	if v.lru != nil {
+		v.lru.Add(code, result)
+	}
 	return result
 }
 
 // foundInFile opens and streams the file, returning true iff the exact token (case-sensitive) is present.
 // Missing/unreadable files are treated as "not found, nil error".
-func foundInFile(path, code string, minLen, maxLen int) (bool, error) {
+func foundInFile(path, code string) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return false, nil // tolerate missing or unreadable file
+		return false, nil // tolerate missing/unreadable file
 	}
 	defer f.Close()
 
@@ -158,14 +170,13 @@ func foundInFile(path, code string, minLen, maxLen int) (bool, error) {
 			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 		})
 		for _, w := range words {
-			// exact, case-sensitive match; length already bounded by caller’s code,
-			// but keep quick length check to skip needless compares:
+			// exact, case-sensitive match; quick length check first
 			if len(w) == len(code) && w == code {
 				return true, nil
 			}
 		}
 	}
-	// scanner errors are treated as "not found" but non-fatal
+	// scanner errors treated as "not found" but non-fatal
 	return false, nil
 }
 
