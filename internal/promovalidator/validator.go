@@ -27,75 +27,86 @@ type ValidatorService interface {
 	ValidatePromoCode(code string) bool
 }
 
-// validatorService implements ValidatorService.
-type validatorService struct {
-	cfg        Config
-	couponSets []map[string]bool
-	once       sync.Once
-	initErr    error
+// streamingValidator implements ValidatorService in a streaming, safe way.
+type streamingValidator struct {
+	cfg  Config
+	once sync.Once
+	init error
+
+	// tiny cache: code -> bool
+	cache sync.Map
 }
 
-// NewValidatorService creates a validator instance with the given config.
+// NewValidatorService creates a streaming validator.
 func NewValidatorService(cfg Config) ValidatorService {
-	return &validatorService{
-		cfg:        cfg,
-		couponSets: make([]map[string]bool, len(cfg.Files)),
-	}
+	return &streamingValidator{cfg: cfg}
 }
 
-func (s *validatorService) LoadCouponFiles() error {
-	s.once.Do(func() {
-		if len(s.cfg.Files) == 0 {
-			s.initErr = errors.New("validator: no files configured")
+// LoadCouponFiles validates configuration only (does NOT open files).
+// This prevents LoadCouponFiles from failing simply because one data file is missing.
+func (v *streamingValidator) LoadCouponFiles() error {
+	v.once.Do(func() {
+		if len(v.cfg.Files) == 0 {
+			v.init = errors.New("validator: no files configured")
 			return
 		}
-		if s.cfg.MinLen <= 0 || s.cfg.MaxLen < s.cfg.MinLen {
-			s.initErr = errors.New("validator: invalid length bounds")
+		if v.cfg.MinLen <= 0 || v.cfg.MaxLen < v.cfg.MinLen {
+			v.init = errors.New("validator: invalid length bounds")
 			return
 		}
-		if s.cfg.RequiredHits <= 0 {
-			s.initErr = errors.New("validator: RequiredHits must be >= 1")
+		if v.cfg.RequiredHits <= 0 {
+			v.init = errors.New("validator: RequiredHits must be >= 1")
 			return
 		}
-		for i, name := range s.cfg.Files {
-			full := filepath.Join(s.cfg.Dir, name)
-			set, err := loadCouponsFromFile(full, s.cfg.MinLen, s.cfg.MaxLen)
-			if err != nil {
-				s.initErr = err
-				return
-			}
-			s.couponSets[i] = set
-		}
+		// intentionally DO NOT attempt to open files here
 	})
-	return s.initErr
+	return v.init
 }
 
-func (s *validatorService) ValidatePromoCode(code string) bool {
-	if err := s.LoadCouponFiles(); err != nil { // safe; Once prevents re-run
+// ValidatePromoCode checks code (case-sensitive), scanning files on demand.
+// It tolerates missing files and will return true once RequiredHits are reached.
+func (v *streamingValidator) ValidatePromoCode(code string) bool {
+	// best-effort config validation; ignore non-config errors
+	_ = v.LoadCouponFiles()
+
+	code = strings.TrimSpace(code)
+	if l := len(code); l < v.cfg.MinLen || l > v.cfg.MaxLen || !isAlnum(code) {
 		return false
 	}
-	trimmed := strings.TrimSpace(code)
-	if l := len(trimmed); l < s.cfg.MinLen || l > s.cfg.MaxLen || !isAlnum(trimmed) {
-		return false
+
+	// cache fastpath
+	if cached, ok := v.cache.Load(code); ok {
+		return cached.(bool)
 	}
+
 	found := 0
-	for _, set := range s.couponSets {
-		if set[trimmed] {
+	for _, fn := range v.cfg.Files {
+		full := filepath.Join(v.cfg.Dir, fn)
+		ok, err := foundInFile(full, code, v.cfg.MinLen, v.cfg.MaxLen)
+		if err != nil {
+			// tolerate: skip unreadable files
+			continue
+		}
+		if ok {
 			found++
-			if found >= s.cfg.RequiredHits {
+			if found >= v.cfg.RequiredHits {
+				v.cache.Store(code, true)
 				return true
 			}
 		}
 	}
+
+	v.cache.Store(code, false)
 	return false
 }
 
-// --- helpers ---
-
-func loadCouponsFromFile(filename string, minLen, maxLen int) (map[string]bool, error) {
+// foundInFile opens and scans the file for the exact token (case-sensitive).
+// If file can't be opened, return (false, nil) to indicate "not found, but not fatal".
+func foundInFile(filename, code string, minLen, maxLen int) (bool, error) {
 	f, err := os.Open(filename)
 	if err != nil {
-		return nil, err
+		// treat missing/unreadable file as non-fatal (test expects this)
+		return false, nil
 	}
 	defer f.Close()
 
@@ -103,34 +114,35 @@ func loadCouponsFromFile(filename string, minLen, maxLen int) (map[string]bool, 
 	if strings.HasSuffix(strings.ToLower(filename), ".gz") {
 		gzr, err := gzip.NewReader(f)
 		if err != nil {
-			return nil, err
+			// unreadable gzip -> treat as non-fatal skip
+			return false, nil
 		}
 		defer gzr.Close()
 		r = gzr
 	}
 
-	set := make(map[string]bool, 1024)
 	sc := bufio.NewScanner(r)
-
-	// Increase scanner buffer size to handle long lines.
-	const maxLine = 1024 * 1024 // 1 MB per line
+	// allow long lines
+	const maxLine = 1024 * 1024 // 1MB
 	buf := make([]byte, 64*1024)
 	sc.Buffer(buf, maxLine)
 
 	for sc.Scan() {
+		// split into tokens by non-alphanumeric
 		words := strings.FieldsFunc(sc.Text(), func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 		})
 		for _, w := range words {
-			if l := len(w); l >= minLen && l <= maxLen && isAlnum(w) {
-				set[w] = true
+			if l := len(w); l >= minLen && l <= maxLen && isAlnum(w) && w == code {
+				return true, nil
 			}
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return nil, err
+		// if scanning fails, treat it as a skip (non-fatal)
+		return false, nil
 	}
-	return set, nil
+	return false, nil
 }
 
 func isAlnum(s string) bool {

@@ -1,0 +1,16 @@
+# .dockerignore
+.git
+.gitignore
+.vscode
+.idea
+bin/
+dist/
+coverage.*
+*.out
+
+# Large data should be bind-mounted, not copied in
+data/
+*.gz
+*.zip
+
+.DS_Store

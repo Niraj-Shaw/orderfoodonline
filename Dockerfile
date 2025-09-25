@@ -3,21 +3,23 @@
 ############################
 # 1) Build stage
 ############################
-FROM golang:1.22-alpine AS builder
+ARG GO_VERSION=1.23.3
+FROM golang:${GO_VERSION}-alpine AS builder
 
-# install toolchain for private modules, etc.
+# Optional: if you prefer to let Go auto-fetch the exact toolchain, uncomment next line
+# ENV GOTOOLCHAIN=auto
+
 RUN apk add --no-cache git
+WORKDIR /src
 
-WORKDIR /app
-
-# cache deps
+# Cache deps first
 COPY go.mod go.sum ./
 RUN go mod download
 
-# copy source
+# Copy source
 COPY . .
 
-# build static binary
+# Build static binary
 RUN CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags "-s -w" \
     -o /out/orderfoodonline ./cmd/server
@@ -27,28 +29,29 @@ RUN CGO_ENABLED=0 GOOS=linux \
 ############################
 FROM alpine:3.20
 
-# add non-root user
-RUN adduser -D -u 10001 app
-
-# minimal runtime deps (curl for healthcheck, certs for HTTPS)
+# Minimal runtime deps (certs for HTTPS, curl for healthcheck)
 RUN apk add --no-cache ca-certificates curl
 
-# config (override at runtime as needed)
-ENV SERVER_ADDR=":8080" \
-    API_KEY="apitest" \
-    COUPON_DIR="/data"
-
-WORKDIR /
-COPY --from=builder /out/orderfoodonline /orderfoodonline
-
-# where you will MOUNT your big coupon files at runtime
-VOLUME ["/data"]
-
-EXPOSE 8080
+# Non-root user
+RUN adduser -D -u 10001 app
 USER app
 
-# healthcheck hits your app's /healthz
+WORKDIR /app
+COPY --from=builder /out/orderfoodonline /app/server
+
+# Default envs (override at `docker run` if needed)
+ENV PORT=8080 \
+    API_KEY=apitest \
+    COUPON_DIR=/app/data \
+    LOG_LEVEL=info \
+    GO_ENV=production
+
+# You will bind-mount coupon files here at runtime
+VOLUME ["/app/data"]
+
+EXPOSE 8080
+
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -fsS http://localhost:8080/healthz || exit 1
 
-ENTRYPOINT ["/orderfoodonline"]
+ENTRYPOINT ["/app/server"]
