@@ -32,8 +32,8 @@ func NewServer(
 	s := &http.Server{
 		Addr:         cfg.ServerAddr, // from config
 		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 180 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 	return &Server{server: s, logger: logger, handlers: h}
