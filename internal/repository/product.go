@@ -15,7 +15,7 @@ type ProductWriter interface {
 	Delete(id string) error
 }
 
-// If you ever want to require full CRUD in some component:
+// If require to implement full CRUD in some component:
 type ProductStore interface {
 	ProductRepository
 	ProductWriter

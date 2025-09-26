@@ -1,4 +1,3 @@
-// internal/transport/http/handler_test.go
 package transporthttp
 
 import (

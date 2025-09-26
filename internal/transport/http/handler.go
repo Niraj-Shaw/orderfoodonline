@@ -45,7 +45,6 @@ func (h *Handlers) ListProducts(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) GetProduct(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["productId"]
 
-	// Optional: validate numeric because spec says int64
 	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
 		h.sendError(w, http.StatusBadRequest, "error", "Invalid ID supplied")
 		return
@@ -69,14 +68,11 @@ func (h *Handlers) PlaceOrder(w http.ResponseWriter, r *http.Request) {
 
 	order, err := h.orderService.PlaceOrder(req)
 	if err != nil {
-		// Keep it simple for now: treat service errors as validation issues per spec (422)
 		h.sendError(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
 		return
 	}
 	h.sendJSON(w, http.StatusOK, order)
 }
-
-// --- helpers ---
 
 func (h *Handlers) sendJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

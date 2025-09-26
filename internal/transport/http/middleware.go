@@ -75,7 +75,6 @@ func APIKeyMiddleware(requiredAPIKey string, logger util.Logger) func(http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodOptions {
-				// Preflight should not require auth
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -86,7 +85,6 @@ func APIKeyMiddleware(requiredAPIKey string, logger util.Logger) func(http.Handl
 				return
 			}
 			if apiKey != requiredAPIKey {
-				// Do not log the provided key value
 				logger.Warnf("invalid api_key: %s %s", r.Method, r.URL.Path)
 				sendUnauthorized(w, "Invalid API key")
 				return

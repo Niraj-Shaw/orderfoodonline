@@ -8,7 +8,6 @@ import (
 )
 
 // Logger is a small facade used across the project.
-// It gives you printf-style methods and a With(...) for fields.
 type Logger interface {
 	// printf-style
 	Debugf(format string, args ...any)
@@ -57,8 +56,6 @@ func NewTestLogger() Logger {
 	return &slogLogger{l: slog.New(slog.NewTextHandler(os.Stdout, opts))}
 }
 
-// --- Logger implementation ---
-
 func (s *slogLogger) Debugf(format string, args ...any) { s.l.Debug(fmt.Sprintf(format, args...)) }
 func (s *slogLogger) Infof(format string, args ...any)  { s.l.Info(fmt.Sprintf(format, args...)) }
 func (s *slogLogger) Warnf(format string, args ...any)  { s.l.Warn(fmt.Sprintf(format, args...)) }
@@ -73,8 +70,6 @@ func (s *slogLogger) With(args ...any) Logger {
 }
 
 func (s *slogLogger) Slog() *slog.Logger { return s.l }
-
-// --- helpers ---
 
 func parseLevel(v string) slog.Leveler {
 	switch strings.ToLower(strings.TrimSpace(v)) {

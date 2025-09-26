@@ -81,6 +81,24 @@ func TestValidatePromoCode_SubstringVsToken(t *testing.T) {
 	}
 }
 
+func TestValidatePromoCode_ConfigErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeGzipFile(t, filepath.Join(dir, "file.gz"), []string{"HAPPYHRS"})
+
+	bad := []Config{
+		{Dir: dir, Files: nil, MinLen: 8, MaxLen: 10, RequiredHits: 1},                 // no files
+		{Dir: dir, Files: []string{"file.gz"}, MinLen: 0, MaxLen: 10, RequiredHits: 1}, // invalid min
+		{Dir: dir, Files: []string{"file.gz"}, MinLen: 8, MaxLen: 5, RequiredHits: 1},  // invalid range
+		{Dir: dir, Files: []string{"file.gz"}, MinLen: 8, MaxLen: 10, RequiredHits: 0}, // invalid hits
+	}
+	for _, cfg := range bad {
+		v := NewValidatorService(cfg)
+		if err := v.LoadCouponFiles(); err == nil {
+			t.Errorf("expected error for cfg: %+v", cfg)
+		}
+	}
+}
+
 func TestValidatePromoCode_MissingFilesAreIgnored(t *testing.T) {
 	dir := t.TempDir()
 	writeGzipFile(t, filepath.Join(dir, "couponbase1.gz"), []string{"HAPPYHRS"})
@@ -101,20 +119,21 @@ func TestValidatePromoCode_MissingFilesAreIgnored(t *testing.T) {
 	}
 }
 
-func TestValidatePromoCode_ConfigErrors(t *testing.T) {
+func TestValidatePromoCode_CaseSensitive(t *testing.T) {
 	dir := t.TempDir()
-	writeGzipFile(t, filepath.Join(dir, "file.gz"), []string{"HAPPYHRS"})
+	writeGzipFile(t, filepath.Join(dir, "couponbase1.gz"), []string{"HAPPYHRS"})
+	writeGzipFile(t, filepath.Join(dir, "couponbase2.gz"), []string{"HAPPYHRS"})
 
-	bad := []Config{
-		{Dir: dir, Files: nil, MinLen: 8, MaxLen: 10, RequiredHits: 1},                 // no files
-		{Dir: dir, Files: []string{"file.gz"}, MinLen: 0, MaxLen: 10, RequiredHits: 1}, // invalid min
-		{Dir: dir, Files: []string{"file.gz"}, MinLen: 8, MaxLen: 5, RequiredHits: 1},  // invalid range
-		{Dir: dir, Files: []string{"file.gz"}, MinLen: 8, MaxLen: 10, RequiredHits: 0}, // invalid hits
+	cfg := Config{
+		Dir:          dir,
+		Files:        []string{"couponbase1.gz", "couponbase2.gz"},
+		MinLen:       8,
+		MaxLen:       10,
+		RequiredHits: 2,
 	}
-	for _, cfg := range bad {
-		v := NewValidatorService(cfg)
-		if err := v.LoadCouponFiles(); err == nil {
-			t.Errorf("expected error for cfg: %+v", cfg)
-		}
+	v := NewValidatorService(cfg)
+
+	if v.ValidatePromoCode("happyhrs") {
+		t.Fatalf("expected lowercase happyhrs to be invalid (case-sensitive check)")
 	}
 }

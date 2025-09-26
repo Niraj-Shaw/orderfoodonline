@@ -11,8 +11,6 @@ import (
 	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
 )
 
-// ----- validation error type & helper -----
-
 type ValidationError struct{ Message string }
 
 func (e *ValidationError) Error() string { return e.Message }
@@ -23,8 +21,6 @@ func IsValidationError(err error) bool {
 	var v *ValidationError
 	return errors.As(err, &v)
 }
-
-// ----- service -----
 
 // OrderService handles business logic for order operations.
 type OrderService struct {

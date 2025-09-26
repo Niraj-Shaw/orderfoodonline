@@ -22,7 +22,6 @@ func NewOrderRepo() repository.OrderRepository {
 	}
 }
 
-// Ensure it implements the interface
 var _ repository.OrderRepository = (*orderMemoryRepository)(nil)
 
 // CreateOrder adds a new order if it doesn’t already exist.

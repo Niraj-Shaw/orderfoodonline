@@ -28,11 +28,8 @@ func NewProductRepo(seed []models.Product) *ProductRepo {
 	return &ProductRepo{products: m}
 }
 
-// Ensure it implements the read interface used by handlers/services.
 var _ repository.ProductRepository = (*ProductRepo)(nil)
-
-// Optionally also implement the writer interface.
-var _ repository.ProductWriter = (*ProductRepo)(nil)
+var _ repository.ProductWriter = (*ProductRepo)(nil) // Optional
 
 func (r *ProductRepo) GetAll() ([]models.Product, error) {
 	r.mu.RLock()

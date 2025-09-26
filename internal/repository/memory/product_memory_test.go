@@ -15,7 +15,7 @@ func TestProductRepo_Behavior(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		setup      func() // optional mutator
+		setup      func()
 		action     func() (any, error)
 		wantErr    error
 		wantLength int

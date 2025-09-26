@@ -1,3 +1,4 @@
+// internal/promovalidator/validator.go
 package promovalidator
 
 import (
@@ -7,58 +8,58 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unicode"
 )
 
 // Config holds the validator rules and file locations.
 type Config struct {
-	Dir          string   // e.g. "./data"
-	Files        []string // e.g. ["couponbase1.gz","couponbase2.gz","couponbase3.gz"]
-	MinLen       int      // 8
-	MaxLen       int      // 10
-	RequiredHits int      // 2
-
-	// Optional: cap the in-memory results cache (string->bool) to avoid unbounded growth.
-	// If 0, a sensible default (50k) is used. If negative, caching is disabled.
-	CacheSize int // e.g. 50000
+	Dir                      string   // e.g. "./data"
+	Files                    []string // e.g. ["couponbase1.gz", "couponbase2.gz", "couponbase3.gz"]
+	MinLen                   int      // minimum code length (e.g. 8)
+	MaxLen                   int      // maximum code length (e.g. 10)
+	RequiredHits             int      // how many different files the code must appear in (e.g. 2)
+	MaxConcurrentValidations int      // If <= 0, a small default (2) is used.
 }
 
 // ValidatorService is the public interface for promo validation.
 type ValidatorService interface {
+	// LoadCouponFiles validates the configuration once. (Does NOT open/parse files.)
 	LoadCouponFiles() error
+	// ValidatePromoCode checks a code against the configured files.
+	// Case-sensitive, streams files on demand, tolerates missing/unreadable files,
+	// and returns true as soon as RequiredHits is reached.
 	ValidatePromoCode(code string) bool
 }
 
-// parallelValidator scans files on demand, concurrently, with early stop and bounded cache.
-type parallelValidator struct {
+// streamingValidator implements ValidatorService with on-demand streaming and caching.
+type streamingValidator struct {
 	cfg  Config
 	once sync.Once
 	init error
 
-	// bounded cache (LRU). If nil, caching disabled.
-	lru *LRU
+	// tiny concurrent cache: promoCode -> bool (result).
+	cache sync.Map
+
+	// semaphore to cap concurrent validations (protects memory/disk IO under load)
+	sem chan struct{}
 }
 
-// NewValidatorService creates the validator with a bounded cache.
+// NewValidatorService creates a streaming validator with an optional concurrency cap.
 func NewValidatorService(cfg Config) ValidatorService {
-	// default cache size if not provided
-	size := cfg.CacheSize
-	if size == 0 {
-		size = 50000
+	max := cfg.MaxConcurrentValidations
+	if max <= 0 {
+		max = 2 // small, safe default
 	}
-	var lru *LRU
-	if size > 0 {
-		lru = NewLRU(size)
+	return &streamingValidator{
+		cfg: cfg,
+		sem: make(chan struct{}, max),
 	}
-	return &parallelValidator{cfg: cfg, lru: lru}
 }
 
-// LoadCouponFiles validates configuration only (does NOT open files).
-func (v *parallelValidator) LoadCouponFiles() error {
+// LoadCouponFiles validates configuration only (no file IO here).
+func (v *streamingValidator) LoadCouponFiles() error {
 	v.once.Do(func() {
 		if len(v.cfg.Files) == 0 {
 			v.init = errors.New("validator: no files configured")
@@ -76,10 +77,14 @@ func (v *parallelValidator) LoadCouponFiles() error {
 	return v.init
 }
 
-// ValidatePromoCode checks the code (case-sensitive) by scanning files in parallel.
-// Missing/unreadable files are tolerated (skipped). Results are cached in a bounded LRU (if enabled).
-func (v *parallelValidator) ValidatePromoCode(code string) bool {
-	// Don’t block on config errors; best-effort.
+// ValidatePromoCode checks code (case-sensitive), scanning files on demand.
+// Missing/unreadable files are skipped. Results are cached per code.
+func (v *streamingValidator) ValidatePromoCode(code string) bool {
+	// Concurrency cap for validations
+	v.sem <- struct{}{}
+	defer func() { <-v.sem }()
+
+	// Best-effort config validation (Once); ignore error at call site.
 	_ = v.LoadCouponFiles()
 
 	code = strings.TrimSpace(code)
@@ -88,95 +93,71 @@ func (v *parallelValidator) ValidatePromoCode(code string) bool {
 	}
 
 	// Cache fast path
-	if v.lru != nil {
-		if val, ok := v.lru.Get(code); ok {
-			return val
-		}
+	if cached, ok := v.cache.Load(code); ok {
+		return cached.(bool)
 	}
 
-	// Parallel scan with early stop
-	var found int32
-	var wg sync.WaitGroup
-
-	limit := runtime.NumCPU()
-	if limit < 1 {
-		limit = 1
-	}
-	sem := make(chan struct{}, limit)
-	stop := atomic.Bool{} // set to true when we’ve reached RequiredHits
-
+	// Stream files sequentially with early exit on RequiredHits
+	found := 0
 	for _, name := range v.cfg.Files {
-		if stop.Load() {
-			break
-		}
-		wg.Add(1)
-		sem <- struct{}{}
 		full := filepath.Join(v.cfg.Dir, name)
-
-		go func(path string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
-			if stop.Load() {
-				return
+		ok, err := foundInFile(full, code, v.cfg.MinLen, v.cfg.MaxLen)
+		if err != nil {
+			// tolerate unreadable/missing file: skip
+			continue
+		}
+		if ok {
+			found++
+			if found >= v.cfg.RequiredHits {
+				v.cache.Store(code, true)
+				return true
 			}
-			ok, _ := foundInFile(path, code)
-			if ok {
-				if atomic.AddInt32(&found, 1) >= int32(v.cfg.RequiredHits) {
-					stop.Store(true) // signal others to stop ASAP
-				}
-			}
-		}(full)
+		}
 	}
-	wg.Wait()
 
-	result := atomic.LoadInt32(&found) >= int32(v.cfg.RequiredHits)
-
-	// Store in bounded cache
-	if v.lru != nil {
-		v.lru.Add(code, result)
-	}
-	return result
+	v.cache.Store(code, false)
+	return false
 }
 
-// foundInFile opens and streams the file, returning true iff the exact token (case-sensitive) is present.
-// Missing/unreadable files are treated as "not found, nil error".
-func foundInFile(path, code string) (bool, error) {
-	f, err := os.Open(path)
+// foundInFile opens and scans the file for the exact token (case-sensitive).
+// If file can't be opened or scan fails, it returns (false, nil) to indicate "not found, but not fatal".
+func foundInFile(filename, code string, minLen, maxLen int) (bool, error) {
+	f, err := os.Open(filename)
 	if err != nil {
-		return false, nil // tolerate missing/unreadable file
+		// treat missing/unreadable file as non-fatal
+		return false, nil
 	}
 	defer f.Close()
 
 	var r io.Reader = f
-	if strings.HasSuffix(strings.ToLower(path), ".gz") {
+	if strings.HasSuffix(strings.ToLower(filename), ".gz") {
 		gzr, err := gzip.NewReader(f)
 		if err != nil {
-			return false, nil // unreadable gzip; skip
+			// unreadable gzip -> skip
+			return false, nil
 		}
 		defer gzr.Close()
 		r = gzr
 	}
 
 	sc := bufio.NewScanner(r)
-	// Allow long lines
-	const maxLine = 1024 * 1024 // 1MB
+	// allow reasonably long lines (1MiB max token buffer)
+	const maxLine = 1024 * 1024
 	buf := make([]byte, 64*1024)
 	sc.Buffer(buf, maxLine)
 
 	for sc.Scan() {
-		// tokenize by non-alphanumeric
+		// split into tokens by non-alphanumeric
 		words := strings.FieldsFunc(sc.Text(), func(r rune) bool {
 			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 		})
 		for _, w := range words {
-			// exact, case-sensitive match; quick length check first
-			if len(w) == len(code) && w == code {
+			if len(w) == len(code) && len(w) >= minLen && len(w) <= maxLen && isAlnum(w) && w == code {
 				return true, nil
 			}
 		}
 	}
-	// scanner errors treated as "not found" but non-fatal
+	// treat scanner errors as "not found" but non-fatal
 	return false, nil
 }
 

@@ -1,4 +1,3 @@
-// internal/transport/http/middleware_test.go
 package transporthttp
 
 import (
@@ -19,8 +18,6 @@ func chain(h http.Handler, mws ...func(http.Handler) http.Handler) http.Handler 
 	}
 	return h
 }
-
-// --- LoggingMiddleware ---
 
 func TestLoggingMiddleware_PassesThroughStatusAndBody(t *testing.T) {
 	logger := util.NewLogger()
@@ -46,13 +43,11 @@ func TestLoggingMiddleware_PassesThroughStatusAndBody(t *testing.T) {
 	if rec.Body.String() != "brew" {
 		t.Fatalf("unexpected body: %q", rec.Body.String())
 	}
-	// sanity: duration should be >=0 (we won't assert exact format)
+	// sanity: duration should be >=0
 	if dur < 0 {
 		t.Fatalf("duration negative?")
 	}
 }
-
-// --- RecoveryMiddleware ---
 
 func TestRecoveryMiddleware_PanicTo500JSON(t *testing.T) {
 	logger := util.NewLogger()
@@ -126,8 +121,6 @@ func TestCORSMiddleware_OptionsShortCircuitAndHeaders(t *testing.T) {
 	}
 }
 
-// --- APIKeyMiddleware ---
-
 func TestAPIKeyMiddleware_Table(t *testing.T) {
 	logger := util.NewLogger()
 	const required = "apitest"
@@ -189,7 +182,6 @@ func TestAPIKeyMiddleware_Table(t *testing.T) {
 				t.Fatalf("preflight should be 204")
 			}
 			if tc.wantStatus == http.StatusUnauthorized {
-				// Should be JSON error
 				if rec.Header().Get("Content-Type") != "application/json" {
 					t.Fatalf("want JSON content-type on 401")
 				}

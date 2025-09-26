@@ -38,10 +38,8 @@ func TestCreateOrder_SuccessAndCopySemantics(t *testing.T) {
 		t.Fatalf("expected saved order with id=%s, got %+v", id, saved)
 	}
 
-	// Mutate the original after CreateOrder; repo should have stored a copy
 	input.Items = append(input.Items, models.OrderItem{ProductID: "1", Quantity: 99})
 
-	// Fetch back and ensure stored value was not affected by post-create mutation
 	got, err := repo.FindByID(id)
 	if err != nil {
 		t.Fatalf("FindByID unexpected error: %v", err)
@@ -59,8 +57,8 @@ func TestCreateOrder_Errors(t *testing.T) {
 	tests := []struct {
 		name      string
 		order     *models.Order
-		wantError string // substring match
-		wantIs    error  // optional: sentinel
+		wantError string
+		wantIs    error
 	}{
 		{
 			name:      "nil order",
@@ -82,7 +80,6 @@ func TestCreateOrder_Errors(t *testing.T) {
 			order: &models.Order{
 				ID: uuid.New().String(),
 			},
-			// second create with same id should fail with a "already exists" message
 			wantError: "already exists",
 		},
 	}
@@ -125,8 +122,8 @@ func TestFindByID_Behavior(t *testing.T) {
 	tests := []struct {
 		name      string
 		id        string
-		wantIs    error  // expected sentinel (or nil for success)
-		wantError string // substring (optional)
+		wantIs    error
+		wantError string
 	}{
 		{
 			name:   "success",

@@ -9,8 +9,6 @@ import (
 	"github.com/Niraj-Shaw/orderfoodonline/internal/repository"
 )
 
-/* -------------------- Shared helpers -------------------- */
-
 func SeedProducts() []models.Product {
 	return []models.Product{
 		{ID: "1", Name: "Chicken Waffle", Price: 12.99, Category: "Waffle"},
@@ -45,8 +43,6 @@ func ContainsFold(s, sub string) bool {
 	}
 	return false
 }
-
-/* -------------------- ProductRepository stub -------------------- */
 
 type ProductRepoStub struct {
 	Products map[string]models.Product
@@ -84,8 +80,6 @@ func (r *ProductRepoStub) GetByID(id string) (*models.Product, error) {
 	return nil, nil
 }
 
-/* -------------------- OrderRepository stub -------------------- */
-
 type OrderRepoStub struct {
 	Stored *models.Order
 	Err    error // if set, CreateOrder returns this error
@@ -107,11 +101,8 @@ func (r *OrderRepoStub) FindByID(id string) (*models.Order, error) {
 		cp := *r.Stored
 		return &cp, nil
 	}
-	// Align with your repo behavior; using sentinel from earlier discussion:
 	return nil, repository.ErrOrderNotFound
 }
-
-/* -------------------- ValidatorService stub -------------------- */
 
 type ValidatorStub struct {
 	Valid bool
@@ -122,8 +113,6 @@ var _ promovalidator.ValidatorService = (*ValidatorStub)(nil)
 
 func (v *ValidatorStub) LoadCouponFiles() error        { return v.Err }
 func (v *ValidatorStub) ValidatePromoCode(string) bool { return v.Valid }
-
-/* -------------------- Prebuilt errors (optional) -------------------- */
 
 var (
 	ErrRepoDown = errors.New("db down")
