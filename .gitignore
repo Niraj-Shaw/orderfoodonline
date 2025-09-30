@@ -23,3 +23,4 @@
 # Local coupon data (HUGE files, don’t commit)
 data/
 *.gz
+.DS_Store
